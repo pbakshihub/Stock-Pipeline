@@ -1,45 +1,61 @@
-Overview
-========
+# Stock Market Data Pipeline
 
-Welcome to Astronomer! This project was generated after you ran 'astro dev init' using the Astronomer CLI. This readme describes the contents of the project, as well as how to run Apache Airflow on your local machine.
+An automated ETL pipeline that pulls live stock quotes from the Finnhub API every 30 minutes, lands them as raw JSON, and loads them into a DuckDB warehouse. It is orchestrated with Apache Airflow, runs in Docker, and is safe to re-run without creating duplicate data.
 
-Project Contents
-================
+## Architecture
 
-Your Astro project contains the following files and folders:
+```mermaid
+flowchart LR
+    A[Finnhub API] --> B[fetch_quotes task]
+    B --> C[(Raw JSON files)]
+    C --> D[load_to_db task]
+    D --> E[(DuckDB: raw_quotes)]
+    F{{Airflow scheduler<br/>every 30 min}} -.-> B
+    F -.-> D
+```
 
-- dags: This folder contains the Python files for your Airflow DAGs. By default, this directory includes one example DAG:
-    - `example_astronauts`: This DAG shows a simple ETL pipeline example that queries the list of astronauts currently in space from the Open Notify API and prints a statement for each astronaut. The DAG uses the TaskFlow API to define tasks in Python, and dynamic task mapping to dynamically print a statement for each astronaut. For more on how this DAG works, see our [Getting started tutorial](https://www.astronomer.io/docs/learn/get-started-with-airflow).
-- Dockerfile: This file contains a versioned Astro Runtime Docker image that provides a differentiated Airflow experience. If you want to execute other commands or overrides at runtime, specify them here.
-- include: This folder contains any additional files that you want to include as part of your project. It is empty by default.
-- packages.txt: Install OS-level packages needed for your project by adding them to this file. It is empty by default.
-- requirements.txt: Install Python packages needed for your project by adding them to this file. It is empty by default.
-- plugins: Add custom or community plugins for your project to this file. It is empty by default.
-- airflow_settings.yaml: Use this local-only file to specify Airflow Connections, Variables, and Pools instead of entering them in the Airflow UI as you develop DAGs in this project.
+## Tech stack
 
-Deploy Your Project Locally
-===========================
+- **Orchestration:** Apache Airflow (via Astro CLI)
+- **Storage / warehouse:** DuckDB
+- **Language:** Python (`requests`, `duckdb`)
+- **Infrastructure:** Docker
 
-Start Airflow on your local machine by running 'astro dev start'.
+## How it works
 
-This command will spin up five Docker containers on your machine, each for a different Airflow component:
+1. **Extract:** Airflow triggers a Python task that calls the Finnhub `/quote` endpoint for each tracked symbol (AAPL, MSFT, GOOGL, AMZN, TSLA) and stamps each record with a `fetched_at` UTC timestamp.
+2. **Land:** Each run writes one timestamped JSON file to `include/data/raw/`. Raw files are never modified, so any downstream logic can be replayed from them.
+3. **Load:** A second task loads new files into the `raw_quotes` table in DuckDB.
 
-- Postgres: Airflow's Metadata Database
-- Scheduler: The Airflow component responsible for monitoring and triggering tasks
-- DAG Processor: The Airflow component responsible for parsing DAGs
-- API Server: The Airflow component responsible for serving the Airflow UI and API
-- Triggerer: The Airflow component responsible for triggering deferred tasks
+## Design decisions
 
-When all five containers are ready the command will open the browser to the Airflow UI at http://localhost:8080/. You should also be able to access your Postgres Database at 'localhost:5432/postgres' with username 'postgres' and password 'postgres'.
+- **Idempotent loads:** a `loaded_files` table records every file already ingested, so re-running the load never duplicates rows.
+- **Raw zone kept immutable:** if a transformation has a bug, data can be reprocessed from the original files.
+- **Retries:** each task retries twice, one minute apart, to survive temporary API failures.
+- **Secrets outside code:** the API key is read from an environment variable and `.env` is git-ignored.
+- **Rate limiting:** a short delay between API calls stays within Finnhub's free-tier limits.
 
-Note: If you already have either of the above ports allocated, you can either [stop your existing Docker containers or change the port](https://www.astronomer.io/docs/astro/cli/troubleshoot-locally#ports-are-not-available-for-my-local-airflow-webserver).
+## Run it locally
 
-Deploy Your Project to Astronomer
-=================================
+Prerequisites: Docker, [Astro CLI](https://www.astronomer.io/docs/astro/cli/install-cli), and a free [Finnhub](https://finnhub.io) API key.
 
-If you have an Astronomer account, pushing code to a Deployment on Astronomer is simple. For deploying instructions, refer to Astronomer documentation: https://www.astronomer.io/docs/astro/deploy-code/
+```bash
+git clone https://github.com/pbakshihub/stock-pipeline.git
+cd stock-pipeline
+echo "FINNHUB_API_KEY=your_key_here" > .env
+astro dev start
+```
 
-Contact
-=======
+Open the Airflow UI (the URL is printed in the terminal), enable the `stock_pipeline` DAG, and trigger a run.
 
-The Astronomer CLI is maintained with love by the Astronomer team. To report a bug or suggest a change, reach out to our support.
+## Roadmap
+
+- [ ] dbt models: staging layer and daily OHLC marts
+- [ ] Data quality tests
+- [ ] Cloud storage and warehouse
+- [ ] Dashboard
+- [ ] TODO: streaming or ML feature table
+
+## What I learned
+ETL pipelines, data idempotency, Airflow orchestration, DAG runs
+TODO: write 2-3 sentences in your own words, for example the idempotency bug you hit and how you fixed it.
